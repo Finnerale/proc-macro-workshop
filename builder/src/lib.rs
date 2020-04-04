@@ -1,8 +1,8 @@
 extern crate proc_macro;
 
-use quote::{quote, format_ident};
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput, Field, punctuated::Punctuated};
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, punctuated::Punctuated, DeriveInput, Field};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -11,8 +11,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let builder_name = format_ident!("{}Builder", name);
 
     let fields: Punctuated<Field, _> = {
-        use syn::{DataStruct, Data::Struct, Fields::Named};
-        if let Struct(DataStruct { fields: Named(fields), ..  }) = input.data {
+        use syn::{Data::Struct, DataStruct, Fields::Named};
+        if let Struct(DataStruct {
+            fields: Named(fields),
+            ..
+        }) = input.data
+        {
             fields.named
         } else {
             panic!("Builder derive only works for named structs")
@@ -21,7 +25,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let builder_fields = fields.iter().map(|field| {
         let ident = field.ident.as_ref().unwrap();
-        let ty = &field.ty;
+        let mut ty = &field.ty;
+        if let Some(oty) = get_optinal_type(ty) {
+            ty = oty;
+        }
         quote! {
             #ident: Option<#ty>,
         }
@@ -36,7 +43,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let builder_setters = fields.iter().map(|field| {
         let ident = field.ident.as_ref().unwrap();
-        let ty = &field.ty;
+        let mut ty = &field.ty;
+        if let Some(oty) = get_optinal_type(ty) {
+            ty = oty;
+        }
         quote! {
             pub fn #ident(&mut self, #ident: #ty) -> &mut Self {
                 self.#ident = Some(#ident);
@@ -47,18 +57,28 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let builder_checks = fields.iter().map(|field| {
         let ident = field.ident.as_ref().unwrap();
-        quote! {
-            if self.#ident.is_none() {
-                return Err(format!("{} has not been set.",
-                        stringify!(#ident)).into());
+        if get_optinal_type(&field.ty).is_none() {
+            quote! {
+                if self.#ident.is_none() {
+                    return Err(format!("{} has not been set.",
+                            stringify!(#ident)).into());
+                }
             }
+        } else {
+            TokenStream::new().into()
         }
     });
 
     let builder_unwraps = fields.iter().map(|field| {
         let ident = field.ident.as_ref().unwrap();
-        quote! {
-            #ident: self.#ident.take().unwrap(),
+        if get_optinal_type(&field.ty).is_some() {
+            quote! {
+                #ident: self.#ident.take(),
+            }
+        } else {
+            quote! {
+                #ident: self.#ident.take().unwrap(),
+            }
         }
     });
 
@@ -91,4 +111,26 @@ pub fn derive(input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+fn get_optinal_type(ty: &syn::Type) -> Option<&syn::Type> {
+    use syn::AngleBracketedGenericArguments as ABGA;
+    if let syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: syn::Path { segments, .. },
+    }) = ty
+    {
+        if let Some(syn::PathSegment {
+            ident,
+            arguments: syn::PathArguments::AngleBracketed(ABGA { args, .. }),
+        }) = segments.first()
+        {
+            if ident == &format_ident!("Option") {
+                if let Some(syn::GenericArgument::Type(oty)) = args.first() {
+                    return Some(oty);
+                }
+            }
+        }
+    }
+    None
 }
